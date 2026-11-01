@@ -1,4 +1,4 @@
-# traviary-stations
+# railway-stations
 
 About 75,000 railway stations in 141 countries, named in each country's own language where it uses the Latin alphabet. Built from [GeoNames](https://www.geonames.org) and [Trainline's open station list](https://github.com/trainline-eu/stations).
 
