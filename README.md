@@ -1,6 +1,6 @@
 # railway-stations
 
-About 75,000 railway stations in 141 countries, named in each country's own language where it uses the Latin alphabet. Built from [GeoNames](https://www.geonames.org) and [Trainline's open station list](https://github.com/trainline-eu/stations).
+About 80,000 railway stations in 140 countries, named in each country's own language where it uses the Latin alphabet. Built from [GeoNames](https://www.geonames.org) and [Trainline's open station list](https://github.com/trainline-eu/stations).
 
 The [Traviary](https://traviary.online) iOS travel journal uses it, fully offline, to anchor train legs at real stations: a trip to Prague starts and ends at **Praha hl.n.**, not at "Prague Main Railway Station" or a suburban halt.
 
@@ -18,17 +18,19 @@ It's meant for maps and travel journals, **not navigation**. Coverage is uneven:
 
 | Column | Meaning |
 |---|---|
-| `geonameid` | GeoNames id; links back to `https://www.geonames.org/<id>` |
+| `geonameid` | GeoNames id; links back to `https://www.geonames.org/<id>`. **Negative** for a station only Trainline lists: minus its Trainline `id` |
 | `name` | Display name (see *Names* below) |
 | `country` | ISO 3166-1 alpha-2 |
 | `latitude`, `longitude` | WGS-84 |
-| `feature_code` | GeoNames `RSTN` (railroad station) or `RSTP` (railroad stop) |
+| `feature_code` | GeoNames `RSTN` (railroad station) or `RSTP` (railroad stop); `TRLN` for a station only Trainline lists |
 | `score` | Importance. Higher means more likely the station a city's trips should anchor at |
 | `name_source` | Where the name came from: `trainline`, `local` (GeoNames alternate name) or `geonames` |
 
 ## How it's built
 
 1. **Stations:** GeoNames `RSTN` + `RSTP`. Metro has its own code and isn't included. Tram stops GeoNames files as stations are dropped by name.
+
+   GeoNames misses many European stations (Přerov, Olomouc hl.n.), so every Trainline station with a UIC code that no GeoNames station matches is added too, as `TRLN`. Entries that are really something else are left out: on SNCF's network, stops without an SNCF station code (SNCF sells its coaches under UIC codes too); anywhere, names marking a coach or PostBus stop, a boat pier, a ferry, a tram or a border tariff point.
 2. **Names**, first match wins:
    1. **Trainline:** if a Trainline station with a UIC code is within 500 m, its curated local name ("Praha hl.n.", "Brno hl.n.", "Mainz Hbf"). Each Trainline station names only its closest GeoNames station, so neighbouring terminals keep their own names.
    2. **GeoNames alternate name** in the country's first official language, **Latin script only**. Japan, Russia, China, etc. keep the Latin GeoNames name ("Tōkyō", not 東京駅).

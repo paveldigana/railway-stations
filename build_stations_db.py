@@ -21,6 +21,13 @@ Sources (all cached next to this script, gitignored; delete a file to refresh):
      and importance signals (main-station flag, rail operators serving it).
      Only rows with a UIC code are read: the rest are city metastations and
      bus stops (FlixBus / Distribusion).
+     GeoNames misses many stations Trainline knows (Přerov, Olomouc hl.n. —
+     Czechia has ~150 GeoNames stations against ~380 Trainline ones), so a
+     Trainline station no GeoNames station claims is added on its own
+     (feature code TRLN, id = −Trainline id, stable across rebuilds) unless it
+     reads as something else: in France a stop without an SNCF station code
+     (SNCF sells its coaches under UIC codes too), anywhere a name marking a bus
+     stop, a Rhine boat pier or a border tariff point ("Aachen Süd (Gr)").
 
 Display name, first hit wins:
   1. Trainline name of a UIC station within TRAINLINE_MATCH_KM (same country).
@@ -90,6 +97,18 @@ GENERIC_PATTERNS = [
                r"railway halt|station|railway)\b\s*", re.IGNORECASE),
     re.compile(r"[\s-]+eki$", re.IGNORECASE),   # romanized Japanese "station"
 ]
+
+# Trainline-only stations: base score as an RSTN, and the code they're stored under.
+TRAINLINE_ONLY_CODE  = "TRLN"
+TRAINLINE_ONLY_SCORE = KEEP_CODES["RSTN"]
+
+# Names Trainline gives non-rail stops (SNCF coaches, Köln-Düsseldorfer boats) and border
+# tariff points — never added on their own.
+NON_RAIL_PATTERN = re.compile(
+    r"gare routi|halte routi|\bbus\b|\bzob\b|mairie|[ée]glise|h[oô]tel de ville|"
+    r"office du tourisme|\bbourg\b|\bplace\b|\bKD\b|\(gr\)|fronti[eè]re",
+    re.IGNORECASE,
+)
 
 # Trainline operator columns that sell *rail* tickets (bus/coach aggregators excluded).
 RAIL_OPERATORS = ["sncf", "entur", "db", "cff", "obb", "trenitalia", "ntv",
@@ -254,12 +273,14 @@ def trainline_index(path: str) -> dict[tuple[int, int], list[dict]]:
             lat, lon = float(row["latitude"]), float(row["longitude"])
             operators = sum(row.get(f"{op}_is_enabled") == "t" for op in RAIL_OPERATORS)
             entry = {
+                "id": int(row["id"]),
                 "name": row["name"].strip(),
                 "country": row["country"],
                 "lat": lat,
                 "lon": lon,
                 "is_main": row["is_main_station"] == "t",
                 "operators": operators,
+                "has_tvs": bool(row["sncf_tvs_id"]),
             }
             key = (int(lat / TRAINLINE_CELL_DEG), int(lon / TRAINLINE_CELL_DEG))
             index.setdefault(key, []).append(entry)
@@ -274,7 +295,8 @@ def nearest_trainline(index, station: Station) -> tuple[dict, float] | None:
     for gy in (cy - 1, cy, cy + 1):
         for gx in (cx - 1, cx, cx + 1):
             for entry in index.get((gy, gx), ()):
-                if entry["country"] != station.country:
+                # A coach stop or boat pier beside the station must not lend it its name.
+                if entry["country"] != station.country or NON_RAIL_PATTERN.search(entry["name"]):
                     continue
                 d = km_between(station.lat, station.lon, entry["lat"], entry["lon"])
                 if d <= best_km:
@@ -284,7 +306,16 @@ def nearest_trainline(index, station: Station) -> tuple[dict, float] | None:
 
 # --------------------------------------------------------------------- merge
 
-def resolve_names_and_scores(stations, alt_names, tl_index) -> None:
+def trainline_score(entry: dict) -> int:
+    score = TRAINLINE_MATCH_BONUS
+    if entry["is_main"]:
+        score += TRAINLINE_MAIN_BONUS
+    return score + min(OPERATOR_BONUS * entry["operators"], OPERATOR_BONUS_CAP)
+
+
+def resolve_names_and_scores(stations, alt_names, tl_index) -> set[int]:
+    """Names and scores every GeoNames station; returns the ids of the Trainline
+    entries a GeoNames station claimed."""
     # Each Trainline station names only its closest GeoNames station: neighbouring
     # terminals (Moscow's Komsomolskaya Square has three within 500 m) are distinct
     # stations and keep their own names.
@@ -304,10 +335,7 @@ def resolve_names_and_scores(stations, alt_names, tl_index) -> None:
         if match:
             s.name = strip_generic(match["name"])
             s.source = "trainline"
-            s.score += TRAINLINE_MATCH_BONUS
-            if match["is_main"]:
-                s.score += TRAINLINE_MAIN_BONUS
-            s.score += min(OPERATOR_BONUS * match["operators"], OPERATOR_BONUS_CAP)
+            s.score += trainline_score(match)
         else:
             local = alt_names.get(s.geonameid)
             if local:
@@ -319,6 +347,33 @@ def resolve_names_and_scores(stations, alt_names, tl_index) -> None:
             s.name = strip_generic(base)
         if MAIN_NAME_PATTERN.search(s.name):
             s.score += MAIN_NAME_BONUS
+    return {entry_id for entry_id in claims}
+
+
+def trainline_only_stations(tl_index, claimed: set[int]) -> list[Station]:
+    """Trainline stations no GeoNames station claimed, kept unless they read as non-rail.
+    No rail-operator test: Trainline sells no PKP tickets, yet Kutno is a station."""
+    added: list[Station] = []
+    skipped = 0
+    for entries in tl_index.values():
+        for entry in entries:
+            if id(entry) in claimed:
+                continue
+            name = entry["name"]
+            # SNCF also sells its coaches under UIC codes; only a station code marks a French halt.
+            if ((entry["country"] == "FR" and not entry["has_tvs"]) or NON_RAIL_PATTERN.search(name) or TRAM_PATTERN.search(name)
+                    or not is_latin(name)):
+                skipped += 1
+                continue
+            s = Station(-entry["id"], name, None, entry["country"], entry["lat"], entry["lon"],
+                        TRAINLINE_ONLY_CODE, TRAINLINE_ONLY_SCORE + trainline_score(entry))
+            s.name = strip_generic(name)
+            s.source = "trainline"
+            if MAIN_NAME_PATTERN.search(s.name):
+                s.score += MAIN_NAME_BONUS
+            added.append(s)
+    print(f"  Trainline only: {len(added):,} stations added ({skipped:,} non-rail skipped)")
+    return added
 
 
 def dedupe(stations: list[Station]) -> list[Station]:
@@ -384,8 +439,8 @@ def main() -> None:
     alt_names = local_alternate_names(download(ALT_NAMES_URL, ALT_NAMES_ZIP), stations, languages)
     tl_index = trainline_index(download(TRAINLINE_URL, TRAINLINE_CSV))
 
-    resolve_names_and_scores(stations, alt_names, tl_index)
-    stations = dedupe(stations)
+    claimed = resolve_names_and_scores(stations, alt_names, tl_index)
+    stations = dedupe(stations + trainline_only_stations(tl_index, claimed))
     sources: dict[str, int] = {}
     for s in stations:
         sources[s.source] = sources.get(s.source, 0) + 1
